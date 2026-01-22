@@ -1,6 +1,6 @@
 {
   "name": "trouter-cli",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A comprehensive CLI tool for Docker optimization and analysis",
   "main": "index.js",
   "bin": {
