@@ -40,5 +40,9 @@
   "bugs": {
     "url": "https://github.com/ez0000001000000/trouter-cli/issues"
   },
-  "homepage": "https://github.com/ez0000001000000/trouter-cli#readme"
+  "homepage": "https://github.com/ez0000001000000/trouter-cli#readme",
+  "downloads": {
+    "week": "https://api.npmjs.org/downloads/point/last-week/trouter-cli",
+    "month": "https://api.npmjs.org/downloads/point/last-month/trouter-cli"
+  }
 }
