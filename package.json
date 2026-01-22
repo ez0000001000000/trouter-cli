@@ -1,6 +1,6 @@
 {
   "name": "trouter-cli",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A CLI tool that gives your node_modules a 'Trust Score' based on maintenance, not just security. Plus comprehensive Docker optimization.",
   "main": "index.js",
   "bin": {
