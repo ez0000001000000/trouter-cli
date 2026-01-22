@@ -1,0 +1,597 @@
+#!/usr/bin/env node
+
+const { Command } = require('commander');
+const chalk = require('chalk');
+const Table = require('cli-table3');
+const path = require('path');
+const fs = require('fs-extra');
+const DependencyScorer = require('../lib/scorer');
+const PackageAnalyzer = require('../lib/package-analyzer');
+const DockerAnalyzer = require('../lib/docker-analyzer');
+const DockerScanner = require('../lib/docker-scanner');
+const DockerPerformance = require('../lib/docker-performance');
+
+const program = new Command();
+
+program
+  .name('trouter')
+  .description('A CLI tool for dependency trust scoring and Docker optimization')
+  .version('1.0.0');
+
+// Dependency scoring commands
+program
+  .command('score')
+  .alias('pack-score')
+  .description('Analyze and score your project dependencies')
+  .option('-p, --path <path>', 'Path to project directory', process.cwd())
+  .option('--exclude-dev', 'Exclude development dependencies', false)
+  .option('--exclude-peer', 'Exclude peer dependencies', false)
+  .option('--exclude-optional', 'Exclude optional dependencies', false)
+  .option('--production-only', 'Only analyze production dependencies', false)
+  .option('--min-score <score>', 'Show only packages with score below this threshold', '5')
+  .option('--json', 'Output results as JSON', false)
+  .action(async (options) => {
+    try {
+      const analyzer = new PackageAnalyzer();
+      const scorer = new DependencyScorer();
+
+      console.log(chalk.blue('🔍 Analyzing dependencies...'));
+      
+      const analysis = await analyzer.analyzeDependencies(options.path);
+      const filteredDeps = analyzer.filterDependencies(analysis.dependencies, {
+        excludeDev: options.excludeDev,
+        excludePeer: options.excludePeer,
+        excludeOptional: options.excludeOptional,
+        onlyProduction: options.productionOnly
+      });
+
+      const depNames = Object.keys(filteredDeps);
+      console.log(chalk.blue(`📦 Found ${depNames.length} dependencies to analyze`));
+
+      const results = [];
+      const progressBar = (current, total) => {
+        const percentage = Math.round((current / total) * 100);
+        process.stdout.write(`\r⏳ Analyzing: ${percentage}% (${current}/${total})`);
+      };
+
+      for (let i = 0; i < depNames.length; i++) {
+        const depName = depNames[i];
+        progressBar(i + 1, depNames.length);
+        
+        const result = await scorer.scorePackage(depName, filteredDeps[depName].version);
+        result.type = filteredDeps[depName].type;
+        results.push(result);
+      }
+
+      console.log('\n');
+
+      if (options.json) {
+        console.log(JSON.stringify(results, null, 2));
+        return;
+      }
+
+      // Filter by minimum score if specified
+      const minScore = parseFloat(options.minScore);
+      const filteredResults = results.filter(r => r.score < minScore);
+
+      if (filteredResults.length === 0) {
+        console.log(chalk.green('✅ All dependencies have acceptable trust scores!'));
+        return;
+      }
+
+      // Create summary table
+      const summaryTable = new Table({
+        head: ['Package', 'Version', 'Score', 'Type', 'Status'],
+        colWidths: [30, 15, 10, 12, 25]
+      });
+
+      filteredResults.forEach(result => {
+        const scoreColor = scorer.getScoreColor(result.score);
+        const status = result.score >= 6 ? '✅ Good' : result.score >= 4 ? '⚠️ Caution' : '❌ Poor';
+        const statusColor = result.score >= 6 ? chalk.green : result.score >= 4 ? chalk.yellow : chalk.red;
+        
+        summaryTable.push([
+          result.name,
+          result.version,
+          scoreColor(`${result.score}/10`),
+          result.type,
+          statusColor(status)
+        ]);
+      });
+
+      console.log(chalk.bold('\n📊 Dependency Trust Score Summary'));
+      console.log(summaryTable.toString());
+
+      // Show detailed reasons for low-scoring packages
+      const poorPackages = filteredResults.filter(r => r.score < 4);
+      if (poorPackages.length > 0) {
+        console.log(chalk.bold.red('\n⚠️ Packages Requiring Attention:'));
+        poorPackages.forEach(pkg => {
+          console.log(chalk.red(`\n📦 ${pkg.name} (${pkg.version}) - Score: ${pkg.score}/10`));
+          pkg.reasons.forEach(reason => {
+            console.log(chalk.red(`   • ${reason}`));
+          });
+        });
+      }
+
+      // Statistics
+      const avgScore = (results.reduce((sum, r) => sum + r.score, 0) / results.length).toFixed(1);
+      const poorCount = results.filter(r => r.score < 4).length;
+      const cautionCount = results.filter(r => r.score >= 4 && r.score < 6).length;
+      const goodCount = results.filter(r => r.score >= 6).length;
+
+      console.log(chalk.bold('\n📈 Statistics:'));
+      console.log(`   Average Score: ${avgScore}/10`);
+      console.log(`   Good (≥6): ${chalk.green(goodCount)} packages`);
+      console.log(`   Caution (4-5): ${chalk.yellow(cautionCount)} packages`);
+      console.log(`   Poor (<4): ${chalk.red(poorCount)} packages`);
+
+    } catch (error) {
+      console.error(chalk.red(`❌ Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('check <package>')
+  .description('Check a specific package')
+  .option('-v, --version <version>', 'Specific version to check', 'latest')
+  .option('--json', 'Output results as JSON', false)
+  .action(async (packageName, options) => {
+    try {
+      const scorer = new DependencyScorer();
+      
+      console.log(chalk.blue(`🔍 Analyzing ${packageName}@${options.version}...`));
+      
+      const result = await scorer.scorePackage(packageName, options.version);
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      const scoreColor = scorer.getScoreColor(result.score);
+      
+      console.log(chalk.bold(`\n📦 ${result.name}@${result.version}`));
+      console.log(`Trust Score: ${scoreColor.bold(`${result.score}/10`)}`);
+      
+      console.log(chalk.bold('\n📋 Reasons:'));
+      result.reasons.forEach(reason => {
+        console.log(`• ${reason}`);
+      });
+
+      if (result.details?.npm) {
+        console.log(chalk.bold('\n📊 Package Info:'));
+        console.log(`• Downloads (last month): ${result.details.npm.downloads.toLocaleString()}`);
+        console.log(`• Maintainers: ${result.details.npm.maintainers.length}`);
+        if (result.details.npm.lastUpdate) {
+          console.log(`• Last published: ${result.details.npm.lastUpdate.toLocaleDateString()}`);
+        }
+      }
+
+      if (result.details?.github) {
+        console.log(chalk.bold('\n🐙 GitHub Info:'));
+        console.log(`• Stars: ${result.details.github.stars}`);
+        console.log(`• Open Issues: ${result.details.github.openIssues}`);
+        console.log(`• Archived: ${result.details.github.archived ? 'Yes' : 'No'}`);
+        if (result.details.github.lastCommit) {
+          console.log(`• Last commit: ${result.details.github.lastCommit.toLocaleDateString()}`);
+        }
+      }
+
+    } catch (error) {
+      console.error(chalk.red(`❌ Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+// Docker commands
+const dockerCommand = program
+  .command('docker')
+  .description('Docker optimization and analysis commands');
+
+dockerCommand
+  .command('analyze')
+  .description('Analyze Dockerfile for optimization opportunities')
+  .option('-p, --path <path>', 'Path to project directory', process.cwd())
+  .option('--json', 'Output results as JSON', false)
+  .action(async (options) => {
+    try {
+      const analyzer = new DockerAnalyzer();
+      
+      await analyzer.checkDockerInstallation();
+      
+      console.log(chalk.blue('🔍 Analyzing Dockerfile...'));
+      
+      const analysis = await analyzer.analyzeDockerfile();
+
+      if (options.json) {
+        console.log(JSON.stringify(analysis, null, 2));
+        return;
+      }
+
+      console.log(chalk.bold('\n📋 Dockerfile Analysis'));
+      
+      // Basic info
+      console.log(chalk.bold('\n📊 Basic Information:'));
+      console.log(`• Lines: ${analysis.lines}`);
+      console.log(`• Base Image: ${analysis.baseImage}`);
+      console.log(`• Node Version: ${analysis.nodeVersion || 'Not detected'}`);
+      console.log(`• Package Manager: ${analysis.packageManager}`);
+      console.log(`• Stages: ${analysis.stages.length}`);
+
+      // Optimization analysis
+      console.log(chalk.bold('\n⚡ Optimization Analysis:'));
+      const opt = analysis.optimizations;
+      console.log(`• Multi-stage Build: ${opt.hasMultiStage ? '✅' : '❌'}`);
+      console.log(`• Package Cache: ${opt.hasPackageCache ? '✅' : '❌'}`);
+      console.log(`• .dockerignore: ${opt.hasDockerignore ? '✅' : '❌'}`);
+      console.log(`• Alpine Base: ${opt.hasAlpineBase ? '✅' : '❌'}`);
+      console.log(`• Production Flag: ${opt.hasProductionFlag ? '✅' : '❌'}`);
+
+      if (opt.suggestions.length > 0) {
+        console.log(chalk.bold.yellow('\n💡 Optimization Suggestions:'));
+        opt.suggestions.forEach(suggestion => {
+          console.log(chalk.yellow(`• ${suggestion}`));
+        });
+      }
+
+      // Security analysis
+      console.log(chalk.bold('\n🔒 Security Analysis:'));
+      const sec = analysis.security;
+      console.log(`• Root User: ${sec.hasRootUser ? '❌' : '✅'}`);
+      console.log(`• HTTPS Base: ${sec.hasHttpsBase ? '✅' : '❌'}`);
+      console.log(`• Updated Packages: ${sec.hasUpdatedPackages ? '✅' : '❌'}`);
+
+      if (sec.issues.length > 0) {
+        console.log(chalk.bold.red('\n⚠️ Security Issues:'));
+        sec.issues.forEach(issue => {
+          console.log(chalk.red(`• ${issue}`));
+        });
+      }
+
+      if (sec.suggestions.length > 0) {
+        console.log(chalk.bold.yellow('\n💡 Security Suggestions:'));
+        sec.suggestions.forEach(suggestion => {
+          console.log(chalk.yellow(`• ${suggestion}`));
+        });
+      }
+
+      // Size analysis
+      console.log(chalk.bold('\n📏 Size Analysis:'));
+      const size = analysis.size;
+      console.log(`• Estimated Size: ${size.estimatedSize}`);
+      console.log(`• Optimization Potential: ${size.optimizationPotential}`);
+
+      if (size.suggestions.length > 0) {
+        console.log(chalk.bold.yellow('\n💡 Size Optimization Suggestions:'));
+        size.suggestions.forEach(suggestion => {
+          console.log(chalk.yellow(`• ${suggestion}`));
+        });
+      }
+
+      // Performance analysis
+      console.log(chalk.bold('\n⚡ Performance Analysis:'));
+      const perf = analysis.performance;
+      console.log(`• Startup Optimization: ${perf.hasStartupOptimization ? '✅' : '❌'}`);
+      console.log(`• Health Check: ${perf.hasHealthCheck ? '✅' : '❌'}`);
+      console.log(`• Resource Limits: ${perf.hasResourceLimits ? '✅' : '❌'}`);
+      console.log(`• Estimated Startup: ${perf.estimatedStartupTime}`);
+
+      if (perf.suggestions.length > 0) {
+        console.log(chalk.bold.yellow('\n💡 Performance Suggestions:'));
+        perf.suggestions.forEach(suggestion => {
+          console.log(chalk.yellow(`• ${suggestion}`));
+        });
+      }
+
+    } catch (error) {
+      console.error(chalk.red(`❌ Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+dockerCommand
+  .command('optimize')
+  .description('Generate optimized Dockerfile and .dockerignore')
+  .option('-p, --path <path>', 'Path to project directory', process.cwd())
+  .option('--force', 'Overwrite existing files', false)
+  .action(async (options) => {
+    try {
+      const analyzer = new DockerAnalyzer();
+      
+      await analyzer.checkDockerInstallation();
+      
+      console.log(chalk.blue('🔧 Generating optimized Docker configuration...'));
+      
+      // Generate optimized Dockerfile
+      const optimizedDockerfile = await analyzer.generateOptimizedDockerfile();
+      const dockerfilePath = path.join(options.path, 'Dockerfile.optimized');
+      
+      if (await fs.pathExists(dockerfilePath) && !options.force) {
+        console.log(chalk.yellow('⚠️  Optimized Dockerfile already exists. Use --force to overwrite.'));
+      } else {
+        await fs.writeFile(dockerfilePath, optimizedDockerfile);
+        console.log(chalk.green(`✅ Generated optimized Dockerfile: ${dockerfilePath}`));
+      }
+
+      // Generate .dockerignore
+      const dockerignore = await analyzer.generateDockerignore();
+      const dockerignorePath = path.join(options.path, '.dockerignore');
+      
+      if (await fs.pathExists(dockerignorePath) && !options.force) {
+        console.log(chalk.yellow('⚠️  .dockerignore already exists. Use --force to overwrite.'));
+      } else {
+        await fs.writeFile(dockerignorePath, dockerignore);
+        console.log(chalk.green(`✅ Generated .dockerignore: ${dockerignorePath}`));
+      }
+
+      console.log(chalk.bold('\n📋 Optimization Summary:'));
+      console.log('• Multi-stage build for reduced image size');
+      console.log('• Non-root user for security');
+      console.log('• Optimized layer caching');
+      console.log('• Health check included');
+      console.log('• Alpine-based for smaller size');
+
+    } catch (error) {
+      console.error(chalk.red(`❌ Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+dockerCommand
+  .command('scan')
+  .description('Scan Docker image for vulnerabilities and security issues')
+  .option('-i, --image <image>', 'Docker image to scan (builds current project if not specified)')
+  .option('--json', 'Output results as JSON', false)
+  .action(async (options) => {
+    try {
+      const scanner = new DockerScanner();
+      
+      console.log(chalk.blue('🔍 Scanning Docker image...'));
+      
+      const scan = await scanner.scanImage(options.image);
+
+      if (options.json) {
+        console.log(JSON.stringify(scan, null, 2));
+        return;
+      }
+
+      console.log(chalk.bold(`\n📋 Docker Image Scan Results: ${scan.image}`));
+      
+      // Vulnerabilities
+      console.log(chalk.bold('\n🔒 Vulnerability Scan:'));
+      const vulns = scan.vulnerabilities;
+      console.log(`• Critical: ${chalk.red(vulns.critical.length)}`);
+      console.log(`• High: ${chalk.red(vulns.high.length)}`);
+      console.log(`• Medium: ${chalk.yellow(vulns.medium.length)}`);
+      console.log(`• Low: ${chalk.blue(vulns.low.length)}`);
+      console.log(`• Info: ${chalk.gray(vulns.info.length)}`);
+      console.log(`• Total: ${vulns.total}`);
+
+      if (vulns.total > 0) {
+        const vulnTable = new Table({
+          head: ['Package', 'Version', 'Severity', 'Description'],
+          colWidths: [20, 15, 10, 50]
+        });
+
+        [...vulns.critical, ...vulns.high, ...vulns.medium].forEach(vuln => {
+          const severityColor = vuln.severity === 'critical' ? chalk.red : 
+                               vuln.severity === 'high' ? chalk.red : 
+                               vuln.severity === 'medium' ? chalk.yellow : chalk.blue;
+          
+          vulnTable.push([
+            vuln.package,
+            vuln.version,
+            severityColor(vuln.severity),
+            vuln.description
+          ]);
+        });
+
+        console.log(vulnTable.toString());
+      }
+
+      // Image size
+      console.log(chalk.bold('\n📏 Image Size:'));
+      console.log(`• Total Size: ${scan.size}`);
+
+      // Layers
+      console.log(chalk.bold('\n📦 Layer Analysis:'));
+      const layers = scan.layers;
+      console.log(`• Total Layers: ${layers.total}`);
+      
+      if (layers.largestLayers.length > 0) {
+        console.log(chalk.bold('\n🔍 Largest Layers:'));
+        layers.largestLayers.forEach((layer, index) => {
+          console.log(`${index + 1}. ${layer.size} - ${layer.command.substring(0, 60)}...`);
+        });
+      }
+
+      // Secrets
+      console.log(chalk.bold('\n🔐 Secret Scan:'));
+      if (scan.secrets.length > 0) {
+        console.log(chalk.red(`⚠️  Found ${scan.secrets.length} potential secrets:`));
+        scan.secrets.forEach(secret => {
+          console.log(chalk.red(`• ${secret.type} in ${secret.file} (${secret.matches} matches)`));
+        });
+      } else {
+        console.log(chalk.green('✅ No secrets detected'));
+      }
+
+      // Permissions
+      console.log(chalk.bold('\n👤 Permission Analysis:'));
+      const perms = scan.permissions;
+      console.log(`• Running as Root: ${perms.runningAsRoot ? '❌' : '✅'}`);
+      console.log(`• Writable Filesystem: ${perms.writableFileSystem ? '⚠️' : '✅'}`);
+      console.log(`• Sudo Installed: ${perms.sudoInstalled ? '❌' : '✅'}`);
+
+      if (perms.issues.length > 0) {
+        console.log(chalk.bold.red('\n⚠️ Permission Issues:'));
+        perms.issues.forEach(issue => {
+          console.log(chalk.red(`• ${issue}`));
+        });
+      }
+
+      if (perms.suggestions.length > 0) {
+        console.log(chalk.bold.yellow('\n💡 Permission Suggestions:'));
+        perms.suggestions.forEach(suggestion => {
+          console.log(chalk.yellow(`• ${suggestion}`));
+        });
+      }
+
+    } catch (error) {
+      console.error(chalk.red(`❌ Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+dockerCommand
+  .command('performance')
+  .description('Test Docker image performance')
+  .option('-i, --image <image>', 'Docker image to test (builds current project if not specified)')
+  .option('--json', 'Output results as JSON', false)
+  .action(async (options) => {
+    try {
+      const performance = new DockerPerformance();
+      
+      console.log(chalk.blue('⚡ Testing Docker image performance...'));
+      
+      const results = await performance.testPerformance(options.image);
+
+      if (options.json) {
+        console.log(JSON.stringify(results, null, 2));
+        return;
+      }
+
+      console.log(chalk.bold(`\n📋 Performance Test Results: ${results.image}`));
+      
+      // Build time
+      console.log(chalk.bold('\n🔨 Build Performance:'));
+      const build = results.buildTime;
+      console.log(`• Average: ${build.average}ms`);
+      console.log(`• Min: ${build.min}ms`);
+      console.log(`• Max: ${build.max}ms`);
+      console.log(`• Samples: ${build.samples}`);
+
+      // Startup time
+      console.log(chalk.bold('\n🚀 Startup Performance:'));
+      const startup = results.startupTime;
+      console.log(`• Average: ${startup.average}ms`);
+      console.log(`• Min: ${startup.min}ms`);
+      console.log(`• Max: ${startup.max}ms`);
+      console.log(`• Samples: ${startup.samples}`);
+
+      // Memory usage
+      console.log(chalk.bold('\n💾 Memory Usage:'));
+      const memory = results.memoryUsage;
+      console.log(`• Current: ${memory.current}`);
+      console.log(`• Total: ${memory.total}`);
+      console.log(`• Percentage: ${memory.percentage}%`);
+      console.log(`• Efficiency: ${memory.efficiency}`);
+
+      // CPU usage
+      console.log(chalk.bold('\n🔥 CPU Usage:'));
+      const cpu = results.cpuUsage;
+      console.log(`• Average: ${cpu.average}%`);
+      console.log(`• Max: ${cpu.max}%`);
+      console.log(`• Samples: ${cpu.samples}`);
+      console.log(`• Efficiency: ${cpu.efficiency}`);
+
+      // Network latency
+      console.log(chalk.bold('\n🌐 Network Latency:'));
+      const network = results.networkLatency;
+      console.log(`• Average: ${network.average}${network.unit}`);
+      console.log(`• Status: ${network.status}`);
+      if (network.targets.length > 0) {
+        console.log(chalk.bold('\n🎯 Latency by Target:'));
+        network.targets.forEach(target => {
+          console.log(`• ${target.target}: ${target.avgTime}${network.unit}`);
+        });
+      }
+
+      // Disk I/O
+      console.log(chalk.bold('\n💿 Disk I/O:'));
+      const disk = results.diskIO;
+      console.log(`• Write Speed: ${disk.write.speed} ${disk.write.unit} (${disk.write.status})`);
+      console.log(`• Read Speed: ${disk.read.speed} ${disk.read.unit} (${disk.read.status})`);
+      console.log(`• Overall: ${disk.overall}`);
+
+      // Recommendations
+      if (results.recommendations.length > 0) {
+        console.log(chalk.bold('\n💡 Performance Recommendations:'));
+        results.recommendations.forEach(rec => {
+          const priorityColor = rec.priority === 'High' ? chalk.red : 
+                              rec.priority === 'Medium' ? chalk.yellow : chalk.blue;
+          console.log(`${priorityColor(`[${rec.priority}]`)} ${rec.category}: ${rec.message}`);
+        });
+      }
+
+    } catch (error) {
+      console.error(chalk.red(`❌ Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+dockerCommand
+  .command('size')
+  .description('Analyze Docker image size and layer breakdown')
+  .option('-i, --image <image>', 'Docker image to analyze (builds current project if not specified)')
+  .option('--json', 'Output results as JSON', false)
+  .action(async (options) => {
+    try {
+      const scanner = new DockerScanner();
+      
+      console.log(chalk.blue('📏 Analyzing Docker image size...'));
+      
+      const scan = await scanner.scanImage(options.image);
+
+      if (options.json) {
+        console.log(JSON.stringify({
+          image: scan.image,
+          size: scan.size,
+          layers: scan.layers
+        }, null, 2));
+        return;
+      }
+
+      console.log(chalk.bold(`\n📋 Size Analysis: ${scan.image}`));
+      
+      console.log(chalk.bold('\n📏 Image Size:'));
+      console.log(`• Total Size: ${scan.size}`);
+
+      console.log(chalk.bold('\n📦 Layer Breakdown:'));
+      const layers = scan.layers;
+      console.log(`• Total Layers: ${layers.total}`);
+      
+      if (layers.largestLayers.length > 0) {
+        const layerTable = new Table({
+          head: ['Size', 'Command'],
+          colWidths: [15, 80]
+        });
+
+        layers.largestLayers.forEach((layer, index) => {
+          layerTable.push([
+            layer.size,
+            layer.command.length > 75 ? layer.command.substring(0, 75) + '...' : layer.command
+          ]);
+        });
+
+        console.log(chalk.bold('\n🔍 Largest Layers:'));
+        console.log(layerTable.toString());
+      }
+
+      // Size optimization suggestions
+      console.log(chalk.bold('\n💡 Size Optimization Tips:'));
+      console.log('• Use multi-stage builds to reduce final image size');
+      console.log('• Combine RUN commands to reduce layers');
+      console.log('• Use .dockerignore to exclude unnecessary files');
+      console.log('• Choose smaller base images (Alpine, distroless)');
+      console.log('• Remove package manager cache after installing dependencies');
+
+    } catch (error) {
+      console.error(chalk.red(`❌ Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+program.parse();
