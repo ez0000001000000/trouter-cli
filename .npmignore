@@ -1,0 +1,55 @@
+# Exclude Dockerfiles (they're examples, not needed for the package)
+Dockerfile*
+*.dockerfile
+
+# Exclude test files
+test/
+tests/
+*.test.js
+*.spec.js
+
+# Exclude development files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Exclude documentation (already in README)
+docs/
+*.md
+!README.md
+
+# Exclude git files
+.git/
+.gitignore
+
+# Exclude npm files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+pnpm-lock.yaml
+
+# Exclude IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Exclude OS files
+.DS_Store
+Thumbs.db
+
+# Exclude build artifacts
+dist/
+build/
+*.tgz
+
+# Exclude coverage
+coverage/
+*.lcov
+
+# Exclude temporary files
+tmp/
+temp/

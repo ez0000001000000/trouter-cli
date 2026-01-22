@@ -1,7 +1,7 @@
 {
   "name": "trouter-cli",
   "version": "1.0.1",
-  "description": "A CLI tool that gives your node_modules a 'Trust Score' based on maintenance, not just security. Plus comprehensive Docker optimization.",
+  "description": "A comprehensive CLI tool for Docker optimization and analysis",
   "main": "index.js",
   "bin": {
     "trouter": "./bin/cli.js"
@@ -13,18 +13,12 @@
   "keywords": [
     "cli",
     "tool",
-    "dependency",
-    "audit",
-    "security",
-    "trust",
-    "score",
-    "npm",
-    "package",
     "docker",
     "optimization",
     "security-scan",
     "performance",
-    "container"
+    "container",
+    "analysis"
   ],
   "author": "Trouter CLI",
   "license": "MIT",
@@ -44,7 +38,7 @@
   },
   "repository": {},
   "bugs": {
-    "url": "https://github.com/trouter-cli/trouter/issues"
+    "url": "https://github.com/ez0000001000000/trouter-cli/issues"
   },
-  "homepage": "https://github.com/trouter-cli/trouter#readme"
+  "homepage": "https://github.com/ez0000001000000/trouter-cli#readme"
 }
