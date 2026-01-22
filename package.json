@@ -36,13 +36,15 @@
   "engines": {
     "node": ">=14.0.0"
   },
-  "repository": {},
-  "bugs": {
-    "url": "https://github.com/ez0000001000000/trouter-cli/issues"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ez0000001000000/trouter-cli.git"
   },
-  "homepage": "https://github.com/ez0000001000000/trouter-cli#readme",
-  "downloads": {
-    "week": "https://api.npmjs.org/downloads/point/last-week/trouter-cli",
-    "month": "https://api.npmjs.org/downloads/point/last-month/trouter-cli"
+  "bugs": {
+    "url": "https://github.com/ez0000001000000/trouter-cli/issues",
+    "downloads": {
+      "week": "https://api.npmjs.org/downloads/point/last-week/trouter-cli",
+      "month": "https://api.npmjs.org/downloads/point/last-month/trouter-cli"
+    }
   }
 }
